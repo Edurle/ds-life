@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
 use std::io;
@@ -171,6 +171,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
 
             let output = Paragraph::new(state.render_text())
                 .scroll((scroll as u16, 0))
+                .wrap(Wrap { trim: false })
                 .block(Block::default().title(output_title).borders(Borders::ALL));
             f.render_widget(output, chunks[0]);
 
@@ -181,6 +182,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                 "Input (Enter to send, Esc to quit)"
             };
             let input = Paragraph::new(state.input_buffer.clone())
+                .wrap(Wrap { trim: false })
                 .block(Block::default().title(input_title).borders(Borders::ALL));
             f.render_widget(input, chunks[1]);
 
