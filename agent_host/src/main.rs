@@ -6,6 +6,7 @@ mod tools;
 mod recovery;
 mod tui;
 mod config;
+mod persistence;
 
 // ── JSON ↔ Lua 值转换 ──────────────────────────────────────────
 
@@ -244,7 +245,8 @@ async fn main() -> anyhow::Result<()> {
             println!("Agent response:\n{}", result);
             return Ok(());
         }
-        return tui::run_tui(demo).await;
+        let db = persistence::init_db().ok();
+        return tui::run_tui(demo, db).await;
     }
 
     // ── CLI 模式 ──

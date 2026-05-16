@@ -59,7 +59,10 @@ fn clamp_scroll(scroll: usize, total_lines: usize, panel_height: usize) -> usize
     scroll.min(max_scroll)
 }
 
-pub async fn run_tui(demo: bool) -> Result<()> {
+/// 运行 TUI 交互模式。
+/// - `demo`: 仅模拟，不调 API
+/// - `db`:   SQLite 数据库连接（用于 /save /history /load）
+pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -67,6 +70,7 @@ pub async fn run_tui(demo: bool) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(demo);
+    let db = db.map(|c| Arc::new(Mutex::new(c)));
     let token_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
     loop {
@@ -137,7 +141,7 @@ pub async fn run_tui(demo: bool) -> Result<()> {
 
                         if task.starts_with('/') {
                             state.processing = true;
-                            process_command(&task, &mut state).await;
+                            process_command(&task, &mut state, &db).await;
                             state.processing = false;
                         } else {
                             state.push_output(&format!("> {}", task));
@@ -200,7 +204,11 @@ pub async fn run_tui(demo: bool) -> Result<()> {
     Ok(())
 }
 
-async fn process_command(cmd: &str, state: &mut TuiState) {
+async fn process_command(
+    cmd: &str,
+    state: &mut TuiState,
+    db: &Option<Arc<Mutex<rusqlite::Connection>>>,
+) {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     let command = parts[0];
 
@@ -211,6 +219,9 @@ async fn process_command(cmd: &str, state: &mut TuiState) {
             state.push_cmd_output("Available commands:");
             state.push_cmd_output("/clear, /c       - Clear output panel");
             state.push_cmd_output("/echo <text>     - Echo text back");
+            state.push_cmd_output("/save, /s        - Save current session");
+            state.push_cmd_output("/history, /hist  - List saved sessions");
+            state.push_cmd_output("/load <N>        - Load session N from history");
             state.push_cmd_output("/help, /?, /h    - Show this help");
             state.push_cmd_output("/quit, /q, /exit - Exit program");
             state.push_output("");
@@ -224,6 +235,126 @@ async fn process_command(cmd: &str, state: &mut TuiState) {
                 state.push_cmd_output("Usage: /echo <text>");
             } else {
                 state.push_output(&format!("echo: {}", text));
+            }
+        }
+        "/save" | "/s" => {
+            let conn = match db {
+                Some(c) => c,
+                None => {
+                    state.push_cmd_output("No database available.");
+                    return;
+                }
+            };
+            // 取第一行有效内容作为标题
+            let title = state
+                .output_text
+                .lines()
+                .find(|l| !l.starts_with("#") && !l.trim().is_empty())
+                .unwrap_or("(untitled)")
+                .to_string();
+            let sid = match crate::persistence::create_session(&conn.lock().unwrap(), &title) {
+                Ok(id) => id,
+                Err(e) => {
+                    state.push_cmd_output(&format!("Failed to create session: {}", e));
+                    return;
+                }
+            };
+            // 保存整个输出文本
+            if let Err(e) = crate::persistence::append_message(
+                &conn.lock().unwrap(),
+                &sid,
+                "session_output",
+                &state.output_text,
+                0,
+            ) {
+                state.push_cmd_output(&format!("Save error: {}", e));
+                return;
+            }
+            state.push_cmd_output(&format!("Session saved [{}]: {}", &sid[..8], title));
+        }
+        "/history" | "/hist" => {
+            let conn = match db {
+                Some(c) => c,
+                None => {
+                    state.push_cmd_output("No database available.");
+                    return;
+                }
+            };
+            let sessions = match crate::persistence::list_sessions(&conn.lock().unwrap()) {
+                Ok(s) => s,
+                Err(e) => {
+                    state.push_cmd_output(&format!("Failed to list: {}", e));
+                    return;
+                }
+            };
+            if sessions.is_empty() {
+                state.push_cmd_output("No saved sessions. Use /save to save.");
+                return;
+            }
+            state.push_output("");
+            state.push_cmd_output("Saved sessions:");
+            for (i, (id, title, updated, count)) in sessions.iter().enumerate() {
+                let date = if updated.len() >= 10 { &updated[..10] } else { updated.as_str() };
+                state.push_cmd_output(&format!(
+                    "  [{}] {}  {}  ({} msgs, id={})",
+                    i + 1,
+                    date,
+                    title,
+                    count,
+                    &id[..8]
+                ));
+            }
+            state.push_output("");
+            state.push_cmd_output("Use /load <N> to load a session.");
+        }
+        "/load" | "/l" => {
+            let conn = match db {
+                Some(c) => c,
+                None => {
+                    state.push_cmd_output("No database available.");
+                    return;
+                }
+            };
+            let idx: usize = match parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
+                Some(n) if n > 0 => n - 1,
+                _ => {
+                    state.push_cmd_output("Usage: /load <N> (N from /history list)");
+                    return;
+                }
+            };
+            let sessions = match crate::persistence::list_sessions(&conn.lock().unwrap()) {
+                Ok(s) => s,
+                Err(e) => {
+                    state.push_cmd_output(&format!("Failed to list: {}", e));
+                    return;
+                }
+            };
+            let (sid, _title, _updated, _) = match sessions.get(idx) {
+                Some(s) => s.clone(),
+                None => {
+                    state.push_cmd_output(&format!("Session #{} not found.", idx + 1));
+                    return;
+                }
+            };
+            let msgs = match crate::persistence::load_messages(&conn.lock().unwrap(), &sid) {
+                Ok(m) => m,
+                Err(e) => {
+                    state.push_cmd_output(&format!("Failed to load: {}", e));
+                    return;
+                }
+            };
+            // 尝试找到保存的完整输出文本
+            let restored = msgs
+                .iter()
+                .find(|m| m["role"] == "session_output")
+                .and_then(|m| m["content"].as_str())
+                .unwrap_or("");
+            state.push_cmd_output(&format!("Restored session {} ({} messages)", idx + 1, msgs.len()));
+            if !restored.is_empty() {
+                state.output_text = restored.to_string();
+                state.push_cmd_output("Session content restored.");
+            } else {
+                state.push_cmd_output("Session has no saved output content.");
             }
         }
         "/quit" | "/q" | "/exit" => state.done = true,
