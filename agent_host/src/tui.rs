@@ -8,46 +8,117 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
 use std::io;
 use std::sync::{Arc, Mutex};
 
+struct StyledLine {
+    text: String,
+    color: Option<Color>,
+}
+
 struct TuiState {
-    output_text: String,
+    output_rows: Vec<StyledLine>,
     input_buffer: String,
     scroll_offset: usize,
     processing: bool,
     done: bool,
     demo: bool,
+    /// 用于 streaming 累积当前行
+    stream_buf: String,
 }
 
 impl TuiState {
     fn new(demo: bool) -> Self {
         let mut s = Self {
-            output_text: String::new(),
+            output_rows: Vec::new(),
             input_buffer: String::new(),
             scroll_offset: usize::MAX,
             processing: false,
             done: false,
             demo,
+            stream_buf: String::new(),
         };
-        s.push_output("Agent TUI ready. Type /help for commands.");
+        s.push_line("Agent TUI ready. Type /help for commands.", None);
         if demo {
-            s.push_output("[Demo mode] No API calls will be made.");
-            s.push_output("Try: type a message, or use /help to see commands.");
+            s.push_line("[Demo mode] No API calls will be made.", Some(Color::DarkGray));
+            s.push_line("Try: type a message, or use /help to see commands.", Some(Color::DarkGray));
         }
         s
     }
 
-    fn push_output(&mut self, line: &str) {
-        self.output_text.push_str(line);
-        self.output_text.push('\n');
+    /// 追加一行带颜色的文本。
+    fn push_line(&mut self, text: &str, color: Option<Color>) {
+        if !self.stream_buf.is_empty() {
+            // 如果有未刷新的流式内容，先作为一行推入
+            self.output_rows.push(StyledLine {
+                text: std::mem::take(&mut self.stream_buf),
+                color: None,
+            });
+        }
+        self.output_rows.push(StyledLine {
+            text: text.to_string(),
+            color,
+        });
     }
 
+    /// 追加普通输出行。
+    fn push_output(&mut self, text: &str) {
+        self.push_line(text, None);
+    }
+
+    /// 追加命令输出行（`#  ` 前缀 + 蓝色）。
     fn push_cmd_output(&mut self, text: &str) {
-        self.push_output(&format!("#  {}", text));
+        self.push_line(text, Some(Color::Cyan));
+    }
+
+    /// 追加用户输入行（`> ` 前缀 + 灰色）。
+    fn push_user_input(&mut self, text: &str) {
+        self.push_line(text, Some(Color::DarkGray));
+    }
+
+    /// 追加错误行（红色）。
+    fn push_error(&mut self, text: &str) {
+        self.push_line(text, Some(Color::Red));
+    }
+
+    /// 追加回显行（绿色）。
+    fn push_echo(&mut self, text: &str) {
+        self.push_line(text, Some(Color::Green));
+    }
+
+    /// 流式 token：累积到 stream_buf，下次 push_line 时刷入
+    fn push_token(&mut self, token: &str) {
+        self.stream_buf.push_str(token);
+    }
+
+    /// 构建渲染文本（从 output_rows + stream_buf）。
+    fn render_text(&self) -> Text<'static> {
+        let mut lines: Vec<Line<'static>> = self
+            .output_rows
+            .iter()
+            .map(|r| {
+                if let Some(color) = r.color {
+                    Line::from(vec![Span::styled(r.text.clone(), Style::default().fg(color))])
+                } else {
+                    Line::from(r.text.clone())
+                }
+            })
+            .collect();
+        // 如果有累积的流式内容，追加为一行
+        if !self.stream_buf.is_empty() {
+            lines.push(Line::from(self.stream_buf.clone()));
+        }
+        Text::from(lines)
+    }
+
+    /// 获取显示行数（含流式）。
+    fn display_lines(&self) -> usize {
+        let base = self.output_rows.len();
+        if self.stream_buf.is_empty() { base } else { base + 1 }
     }
 }
 
@@ -59,9 +130,6 @@ fn clamp_scroll(scroll: usize, total_lines: usize, panel_height: usize) -> usize
     scroll.min(max_scroll)
 }
 
-/// 运行 TUI 交互模式。
-/// - `demo`: 仅模拟，不调 API
-/// - `db`:   SQLite 数据库连接（用于 /save /history /load）
 pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -75,35 +143,35 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
 
     loop {
         let term_size = terminal.size()?;
-        let panel_height = term_size.height.saturating_sub(6) as usize;
+        let panel_height = term_size.height.saturating_sub(7) as usize; // 6 + 1 for status bar
 
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(1)
-                .constraints([Constraint::Percentage(85), Constraint::Length(3)])
+                .constraints([
+                    Constraint::Percentage(84),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                ])
                 .split(f.size());
 
+            // ── 输出面板 ──
             let output_title = if state.processing {
                 "Output (Agent is thinking...)"
             } else {
                 "Output"
             };
-
-            let total_lines = state.output_text.lines().count();
+            let total_lines = state.display_lines();
             let scroll = clamp_scroll(state.scroll_offset, total_lines, panel_height);
             state.scroll_offset = scroll;
 
-            let output = Paragraph::new(state.output_text.clone())
+            let output = Paragraph::new(state.render_text())
                 .scroll((scroll as u16, 0))
-                .style(Style::default().fg(if state.demo {
-                    Color::DarkGray
-                } else {
-                    Color::Reset
-                }))
                 .block(Block::default().title(output_title).borders(Borders::ALL));
             f.render_widget(output, chunks[0]);
 
+            // ── 输入框 ──
             let input_title = if state.processing {
                 "Agent is thinking..."
             } else {
@@ -112,14 +180,46 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
             let input = Paragraph::new(state.input_buffer.clone())
                 .block(Block::default().title(input_title).borders(Borders::ALL));
             f.render_widget(input, chunks[1]);
+
+            // ── 状态栏 ──
+            let mode_tag = if state.demo { "demo" } else { "normal" };
+            let scroll_pct = if total_lines <= panel_height {
+                100
+            } else {
+                // scroll = 0 是顶部，max_scroll = total_lines - panel_height 是底部
+                let max_scroll = total_lines - panel_height;
+                if max_scroll == 0 {
+                    100
+                } else {
+                    ((max_scroll - scroll) * 100) / max_scroll
+                }
+            };
+            let status = format!(
+                " [{}]  lines {}/{}  {}%",
+                mode_tag, scroll, total_lines, scroll_pct,
+            );
+            let status_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
+            let status_bar = Paragraph::new(Line::from(vec![
+                Span::styled(status, status_style),
+            ]));
+            f.render_widget(status_bar, chunks[2]);
         })?;
 
-        // 处理流式 token（processing 期间持续读取）
+        // 流式 token
         if state.processing && !state.demo {
-            stream_token_buffer(&mut state, &token_buffer);
+            let s = {
+                let mut buf = token_buffer.lock().unwrap();
+                if buf.is_empty() {
+                    String::new()
+                } else {
+                    std::mem::take(&mut *buf)
+                }
+            };
+            if !s.is_empty() {
+                state.push_token(&s);
+            }
         }
 
-        // processing 时继续循环（保持 draw 更新界面）
         if state.processing {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             if state.done {
@@ -144,7 +244,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                             process_command(&task, &mut state, &db).await;
                             state.processing = false;
                         } else {
-                            state.push_output(&format!("> {}", task));
+                            state.push_user_input(&format!("> {}", task));
                             state.processing = true;
 
                             if state.demo {
@@ -152,33 +252,40 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                                     tokio::time::Duration::from_millis(800),
                                 )
                                 .await;
-                                state
-                                    .push_output(&format!("(Demo Echo) You said: {}", task));
+                                let resp = format!("(Demo Echo) You said: {}", task);
+                                state.push_echo(&resp);
                             } else {
-                                // 设置流式钩子：token 实时写入缓冲区
                                 let tb = token_buffer.clone();
                                 crate::tools::llm::set_streaming_hook(Box::new(move |token| {
                                     tb.lock().unwrap().push_str(token);
                                 }));
                                 match crate::run_agent_once(&task).await {
                                     Ok(resp) => state.push_output(&resp),
-                                    Err(e) => {
-                                        state.push_output(&format!("(Error: {})", e));
-                                    }
+                                    Err(e) => state.push_error(&format!("(Error: {})", e)),
                                 }
                                 crate::tools::llm::clear_streaming_hook();
+                                // 确保流式 token 全部刷新
+                                let rest = {
+                                    let mut buf = token_buffer.lock().unwrap();
+                                    std::mem::take(&mut *buf)
+                                };
+                                if !rest.is_empty() {
+                                    state.push_token(&rest);
+                                }
+                                // 将 stream_buf 刷入 output_rows
+                                if !state.stream_buf.is_empty() {
+                                    let text = std::mem::take(&mut state.stream_buf);
+                                    state.push_output(&text);
+                                }
                             }
                             state.processing = false;
                         }
                         state.scroll_offset = usize::MAX;
                     }
-                    // scroll 值越大越往底部（更新内容）
-                    // PageUp：看更早内容 → scroll 减小
                     KeyCode::PageUp => {
                         state.scroll_offset =
                             state.scroll_offset.saturating_sub(panel_height);
                     }
-                    // PageDown：看更新内容 → scroll 增大
                     KeyCode::PageDown => {
                         state.scroll_offset =
                             state.scroll_offset.saturating_add(panel_height);
@@ -213,7 +320,7 @@ async fn process_command(
     let command = parts[0];
 
     match command {
-        "/clear" | "/c" => state.output_text.clear(),
+        "/clear" | "/c" => state.output_rows.clear(),
         "/help" | "/?" | "/h" => {
             state.push_output("");
             state.push_cmd_output("Available commands:");
@@ -234,38 +341,33 @@ async fn process_command(
             if text.is_empty() {
                 state.push_cmd_output("Usage: /echo <text>");
             } else {
-                state.push_output(&format!("echo: {}", text));
+                state.push_echo(&format!("echo: {}", text));
             }
         }
         "/save" | "/s" => {
             let conn = match db {
                 Some(c) => c,
-                None => {
-                    state.push_cmd_output("No database available.");
-                    return;
-                }
+                None => { state.push_cmd_output("No database."); return; }
             };
-            // 取第一行有效内容作为标题
+            let content = state
+                .output_rows
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
             let title = state
-                .output_text
-                .lines()
-                .find(|l| !l.starts_with("#") && !l.trim().is_empty())
+                .output_rows
+                .iter()
+                .find(|r| !r.text.starts_with('#') && !r.text.trim().is_empty())
+                .map(|r| r.text.as_str())
                 .unwrap_or("(untitled)")
                 .to_string();
             let sid = match crate::persistence::create_session(&conn.lock().unwrap(), &title) {
                 Ok(id) => id,
-                Err(e) => {
-                    state.push_cmd_output(&format!("Failed to create session: {}", e));
-                    return;
-                }
+                Err(e) => { state.push_cmd_output(&format!("Save error: {}", e)); return; }
             };
-            // 保存整个输出文本
             if let Err(e) = crate::persistence::append_message(
-                &conn.lock().unwrap(),
-                &sid,
-                "session_output",
-                &state.output_text,
-                0,
+                &conn.lock().unwrap(), &sid, "session_output", &content, 0,
             ) {
                 state.push_cmd_output(&format!("Save error: {}", e));
                 return;
@@ -275,104 +377,73 @@ async fn process_command(
         "/history" | "/hist" => {
             let conn = match db {
                 Some(c) => c,
-                None => {
-                    state.push_cmd_output("No database available.");
-                    return;
-                }
+                None => { state.push_cmd_output("No database."); return; }
             };
             let sessions = match crate::persistence::list_sessions(&conn.lock().unwrap()) {
                 Ok(s) => s,
-                Err(e) => {
-                    state.push_cmd_output(&format!("Failed to list: {}", e));
-                    return;
-                }
+                Err(e) => { state.push_cmd_output(&format!("List error: {}", e)); return; }
             };
             if sessions.is_empty() {
-                state.push_cmd_output("No saved sessions. Use /save to save.");
+                state.push_cmd_output("No saved sessions. Use /save.");
                 return;
             }
             state.push_output("");
             state.push_cmd_output("Saved sessions:");
             for (i, (id, title, updated, count)) in sessions.iter().enumerate() {
-                let date = if updated.len() >= 10 { &updated[..10] } else { updated.as_str() };
+                let date = if updated.len() >= 10 { &updated[..10] } else { updated };
                 state.push_cmd_output(&format!(
-                    "  [{}] {}  {}  ({} msgs, id={})",
-                    i + 1,
-                    date,
-                    title,
-                    count,
-                    &id[..8]
+                    "  [{}] {}  {}  ({} msgs)  {}",
+                    i + 1, date, title, count, &id[..8]
                 ));
             }
             state.push_output("");
-            state.push_cmd_output("Use /load <N> to load a session.");
+            state.push_cmd_output("Use /load <N> to restore.");
         }
         "/load" | "/l" => {
             let conn = match db {
                 Some(c) => c,
-                None => {
-                    state.push_cmd_output("No database available.");
-                    return;
-                }
+                None => { state.push_cmd_output("No database."); return; }
             };
             let idx: usize = match parts.get(1).and_then(|s| s.parse::<usize>().ok()) {
                 Some(n) if n > 0 => n - 1,
-                _ => {
-                    state.push_cmd_output("Usage: /load <N> (N from /history list)");
-                    return;
-                }
+                _ => { state.push_cmd_output("Usage: /load <N>"); return; }
             };
             let sessions = match crate::persistence::list_sessions(&conn.lock().unwrap()) {
                 Ok(s) => s,
-                Err(e) => {
-                    state.push_cmd_output(&format!("Failed to list: {}", e));
-                    return;
-                }
+                Err(e) => { state.push_cmd_output(&format!("List error: {}", e)); return; }
             };
             let (sid, _title, _updated, _) = match sessions.get(idx) {
                 Some(s) => s.clone(),
-                None => {
-                    state.push_cmd_output(&format!("Session #{} not found.", idx + 1));
-                    return;
-                }
+                None => { state.push_cmd_output(&format!("Session #{} not found.", idx + 1)); return; }
             };
             let msgs = match crate::persistence::load_messages(&conn.lock().unwrap(), &sid) {
                 Ok(m) => m,
-                Err(e) => {
-                    state.push_cmd_output(&format!("Failed to load: {}", e));
-                    return;
-                }
+                Err(e) => { state.push_cmd_output(&format!("Load error: {}", e)); return; }
             };
-            // 尝试找到保存的完整输出文本
             let restored = msgs
                 .iter()
                 .find(|m| m["role"] == "session_output")
                 .and_then(|m| m["content"].as_str())
                 .unwrap_or("");
-            state.push_cmd_output(&format!("Restored session {} ({} messages)", idx + 1, msgs.len()));
+            state.push_cmd_output(&format!("Restored session {} ({} msgs)", idx + 1, msgs.len()));
             if !restored.is_empty() {
-                state.output_text = restored.to_string();
+                // 重建 output_rows
+                state.output_rows = restored
+                    .lines()
+                    .map(|line| StyledLine {
+                        text: line.to_string(),
+                        color: None,
+                    })
+                    .collect();
                 state.push_cmd_output("Session content restored.");
             } else {
-                state.push_cmd_output("Session has no saved output content.");
+                state.push_cmd_output("No saved output content.");
             }
         }
         "/quit" | "/q" | "/exit" => state.done = true,
         _ => {
-            state.push_cmd_output(&format!("Unknown command: {}", command));
+            state.push_cmd_output(&format!("Unknown: {}", command));
             state.push_cmd_output("Type /help to see available commands.");
         }
     }
-}
-
-/// 从流式缓冲区读取 token 并追加到输出面板。
-fn stream_token_buffer(state: &mut TuiState, buffer: &Arc<Mutex<String>>) {
-    let s = {
-        let mut buf = buffer.lock().unwrap();
-        if buf.is_empty() {
-            return;
-        }
-        std::mem::take(&mut *buf)
-    };
-    state.output_text.push_str(&s);
 }
