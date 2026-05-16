@@ -116,9 +116,12 @@ Rules:
 pub async fn llm_chat(
     api_key: &str,
     model: &str,
+    base_url: &str,
     messages: Value,
 ) -> anyhow::Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
     let tools: Value = serde_json::from_str(TOOLS_DEFINITION)?;
 
     let body = json!({
@@ -132,9 +135,11 @@ pub async fn llm_chat(
     let max_retries = 3;
     let mut last_error = String::new();
 
+    let url = format!("{}/v1/messages", base_url);
+
     for attempt in 0..max_retries {
         let resp = client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(&url)
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .json(&body)

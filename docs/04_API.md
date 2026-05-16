@@ -1,46 +1,66 @@
 # 第4步：连接真实 Anthropic API
 
-## 核心修改
+## 配置系统
 
-### llm.rs — 完整 API 请求体
+### 方式一：配置文件（推荐）
+
+编辑 `~/.deepseek/config.toml`：
+
+```toml
+api_key = "sk-你的密钥"
+default_text_model = "deepseek-v4-pro"
+base_url = "https://api.deepseek.com/anthropic"
+
+# 可选：推理强度
+reasoning_effort = "auto"
+```
+
+`base_url` 会被自动拼接 `/v1/messages` 作为 API 端点。
+
+### 方式二：环境变量
+
+| 环境变量 | 说明 | 示例 |
+|---------|------|------|
+| `ANTHROPIC_API_KEY` | API Key（兼容） | `sk-ant-xxx` |
+| `DEEPSEEK_API_KEY` | API Key（替代） | `sk-xxx` |
+| `ANTHROPIC_BASE_URL` | 基础 URL（兼容） | `https://api.deepseek.com/anthropic` |
+| `DEEPSEEK_BASE_URL` | 基础 URL（替代） | `https://api.deepseek.com/anthropic` |
+| `ANTHROPIC_MODEL` | 模型名（兼容） | `deepseek-v4-pro` |
+| `DEEPSEEK_MODEL` | 模型名（替代） | `deepseek-v4-pro` |
+
+### 优先级
+
+```
+环境变量 > 配置文件 > 默认值
+```
+
+- API key：`ANTHROPIC_API_KEY` > `DEEPSEEK_API_KEY` > `config.toml api_key` > 报错
+- Model：`DEEPSEEK_MODEL` > `ANTHROPIC_MODEL` > `config.toml default_text_model` > `deepseek-v4-pro`
+- Base URL：`DEEPSEEK_BASE_URL` > `ANTHROPIC_BASE_URL` > `config.toml base_url` > `https://api.deepseek.com/anthropic`
+
+### 默认值
+
+- **base_url**: `https://api.deepseek.com/anthropic`（DeepSeek 的 Anthropic API 兼容端点）
+- **model**: `deepseek-v4-pro`
+
+## llm_chat 请求体
 
 Rust 侧组装完整请求体，包含：
 
 ```json
 {
-    "model": "claude-3-5-haiku-20241022",
+    "model": "deepseek-v4-pro",
     "max_tokens": 4096,
     "system": "You are a self-iterating coding agent...",
-    "tools": [
-        {"name": "read_file", "description": "...", "input_schema": {...}},
-        {"name": "write_file", ...},
-        {"name": "bash", ...},
-        {"name": "edit_session_start", ...},
-        {"name": "update_plugin", ...},
-        {"name": "edit_session_commit", ...},
-        {"name": "edit_session_rollback", ...},
-        {"name": "list_skills", ...}
-    ],
+    "tools": [...],
     "messages": [...]
 }
 ```
 
-### main.rs — 异步修复
+请求发送到 `{base_url}/v1/messages`。
 
-`create_async_function` 闭包内，**在同步部分完成 Lua → JSON 转换**，只将 owned 数据 move 进 async block。
+## 重试逻辑
 
-```rust
-// 正确做法
-let host_llm = lua.create_async_function(move |lua, messages: mlua::Value| {
-    let rust_val = lua_to_value(&lua, messages)?;  // 同步转换
-    let api_key = api_key.clone();
-    async move {
-        tools::llm::llm_chat(&api_key, "claude-3-5-haiku-20241022", rust_val).await
-    }
-});
-```
-
-### 重试逻辑
 - 最多 3 次
 - `429 Rate Limited` → 指数退避 (2s, 4s, 8s)
 - 网络错误 → 指数退避重试
@@ -49,5 +69,6 @@ let host_llm = lua.create_async_function(move |lua, messages: mlua::Value| {
 
 ```sh
 export ANTHROPIC_API_KEY="你的密钥"
+# 或者编辑 ~/.deepseek/config.toml
 cd agent_host && cargo build
 ```

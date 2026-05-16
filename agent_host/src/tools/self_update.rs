@@ -7,6 +7,7 @@ lazy_static::lazy_static! {
     static ref SESSIONS: Mutex<HashMap<String, EditSession>> = Mutex::new(HashMap::new());
 }
 
+#[allow(dead_code)]
 pub struct EditSession {
     pub id: String,
     /// 存储完整的相对路径（含 `agent_plugins/` 前缀），方便 git checkout
@@ -50,7 +51,7 @@ pub fn update_plugin(
     content: &str,
 ) -> anyhow::Result<String> {
     let mut sessions = SESSIONS.lock().unwrap();
-    let session = sessions
+    let _session = sessions
         .get_mut(session_id)
         .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
@@ -62,7 +63,7 @@ pub fn update_plugin(
         );
     }
 
-    let path = std::path::Path::new("agent_plugins").join(file_name);
+    let path = crate::config::workspace_root().join("agent_plugins").join(file_name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -70,13 +71,13 @@ pub fn update_plugin(
 
     // 用完整的相对路径（含 agent_plugins/），方便 git checkout
     let full_path = format!("agent_plugins/{}", file_name);
-    session.files_changed.push(full_path);
+    _session.files_changed.push(full_path);
     Ok(format!("Updated {}", file_name))
 }
 
 pub fn commit_session(session_id: &str, message: &str) -> anyhow::Result<String> {
     let sessions = SESSIONS.lock().unwrap();
-    let session = sessions
+    let _session = sessions
         .get(session_id)
         .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 

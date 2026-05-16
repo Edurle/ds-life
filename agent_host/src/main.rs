@@ -1,20 +1,21 @@
-use mlua::{Lua, Function, Value as LuaValue};
+use mlua::{Lua, Value as LuaValue};
 use serde_json::{Value as JsonValue, Map};
 use std::process::Command;
 
 mod tools;
 mod recovery;
 mod tui;
+mod config;
 
 // ── JSON ↔ Lua 值转换 ──────────────────────────────────────────
 
-fn value_to_lua(lua: &Lua, val: &JsonValue) -> mlua::Result<LuaValue> {
+fn value_to_lua<'lua>(lua: &'lua Lua, val: &JsonValue) -> mlua::Result<LuaValue<'lua>> {
     match val {
         JsonValue::Null => Ok(LuaValue::Nil),
         JsonValue::Bool(b) => Ok(LuaValue::Boolean(*b)),
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(LuaValue::Integer(i as i32))
+                Ok(LuaValue::Integer(i))
             } else if let Some(f) = n.as_f64() {
                 Ok(LuaValue::Number(f))
             } else {
@@ -39,7 +40,10 @@ fn value_to_lua(lua: &Lua, val: &JsonValue) -> mlua::Result<LuaValue> {
     }
 }
 
-fn lua_to_value(lua: &Lua, val: LuaValue) -> mlua::Result<JsonValue> {
+fn lua_to_value<'lua>(
+    lua: &'lua Lua,
+    val: LuaValue<'lua>,
+) -> mlua::Result<JsonValue> {
     match val {
         LuaValue::Nil => Ok(JsonValue::Null),
         LuaValue::Boolean(b) => Ok(JsonValue::Bool(b)),
@@ -50,9 +54,9 @@ fn lua_to_value(lua: &Lua, val: LuaValue) -> mlua::Result<JsonValue> {
         LuaValue::String(s) => Ok(JsonValue::String(s.to_str()?.to_owned())),
         LuaValue::Table(tbl) => {
             // 判断：所有键都是整数 → 数组，否则 → 字典
-            let keys: Vec<LuaValue> = tbl
+            let keys: Vec<LuaValue<'_>> = tbl
                 .clone()
-                .pairs::<LuaValue, LuaValue>()
+                .pairs::<LuaValue<'_>, LuaValue<'_>>()
                 .filter_map(|p| p.ok().map(|(k, _)| k))
                 .collect();
             let is_array = !keys.is_empty()
@@ -61,7 +65,8 @@ fn lua_to_value(lua: &Lua, val: LuaValue) -> mlua::Result<JsonValue> {
             if is_array {
                 let mut arr = Vec::new();
                 for i in 1i32.. {
-                    match tbl.get::<i32, LuaValue>(i) {
+                    match tbl.get::<i32, LuaValue<'_>>(i) {
+                        Ok(LuaValue::Nil) => break,
                         Ok(v) => arr.push(lua_to_value(lua, v)?),
                         Err(_) => break,
                     }
@@ -69,7 +74,7 @@ fn lua_to_value(lua: &Lua, val: LuaValue) -> mlua::Result<JsonValue> {
                 Ok(JsonValue::Array(arr))
             } else {
                 let mut map = Map::new();
-                for pair in tbl.pairs::<String, LuaValue>() {
+                for pair in tbl.pairs::<String, LuaValue<'_>>() {
                     let (k, v) = pair?;
                     map.insert(k, lua_to_value(lua, v)?);
                 }
@@ -147,18 +152,26 @@ fn create_lua() -> anyhow::Result<Lua> {
     host.set("edit_session_rollback", host_rollback)?;
 
     // --- 异步工具：llm_chat ---
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .expect("ANTHROPIC_API_KEY environment variable not set");
+    // 从配置文件 / 环境变量加载配置
+    let app_config = config::AppConfig::load()
+        .expect("Failed to load config. Set ANTHROPIC_API_KEY env var or api_key in ~/.deepseek/config.toml");
 
-    let host_llm = lua.create_async_function(move |lua, messages: mlua::Value| {
-        // 同步部分完成 Lua → JSON 转换，async 只捕获 owned 类型
-        let rust_val = lua_to_value(&lua, messages)
-            .map_err(|e| mlua::Error::external(e))?;
-        let api_key = api_key.clone();
+    let model = app_config.model.clone();
+    let base_url = app_config.base_url.clone();
+
+    let host_llm = lua.create_async_function(move |lua, messages: LuaValue<'_>| {
+        let api_key = app_config.api_key.clone();
+        let model = model.clone();
+        let base_url = base_url.clone();
+        // 同步转换，结果被 move 进 async block
+        let convert_result = lua_to_value(&lua, messages);
         async move {
+            let rust_val = convert_result
+                .map_err(|e| mlua::Error::external(e))?;
             let response = tools::llm::llm_chat(
                 &api_key,
-                "claude-3-5-haiku-20241022",
+                &model,
+                &base_url,
                 rust_val,
             )
             .await
@@ -178,7 +191,7 @@ fn create_lua() -> anyhow::Result<Lua> {
     })?;
     json_tbl.set("decode", json_decode)?;
 
-    let json_encode = lua.create_function(|lua, val: LuaValue| {
+    let json_encode = lua.create_function(|lua, val: LuaValue<'_>| {
         let rust_val = lua_to_value(lua, val)
             .map_err(|e| mlua::Error::external(e))?;
         serde_json::to_string(&rust_val).map_err(|e| mlua::Error::external(e))
@@ -208,12 +221,13 @@ async fn main() -> anyhow::Result<()> {
 
     let result: Result<String, anyhow::Error> = async {
         let lua = create_lua()?;
-        let main_loop_code =
-            std::fs::read_to_string("agent_plugins/system_core/main_loop.lua")?;
-        let main_loop: mlua::Table = lua.load(&main_loop_code).eval()?;
-        let run_agent: mlua::Function = main_loop.get("run_agent")?;
+        let main_loop_code = std::fs::read_to_string(
+            config::workspace_root().join("agent_plugins/system_core/main_loop.lua"),
+        )?;
+        let main_loop: mlua::Table<'_> = lua.load(&main_loop_code).eval()?;
+        let run_agent: mlua::Function<'_> = main_loop.get("run_agent")?;
         run_agent
-            .call_async::<String>(task)
+            .call_async::<&str, String>(task)
             .await
             .map_err(|e| anyhow::anyhow!("Agent error: {}", e))
     }

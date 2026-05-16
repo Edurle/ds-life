@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::fs;
 
 fn safe_path(path: &str) -> anyhow::Result<PathBuf> {
-    let base = std::env::current_dir()?;
+    let base = crate::config::workspace_root();
 
     // 先检查原始路径不包含明显的路径遍历
     if path.contains("..") {
@@ -45,7 +45,7 @@ pub fn write_file(path: &str, content: &str) -> anyhow::Result<String> {
 }
 
 pub fn list_skills() -> anyhow::Result<Vec<String>> {
-    let skills_dir = std::path::Path::new("agent_plugins/skills");
+    let skills_dir = crate::config::workspace_root().join("agent_plugins/skills");
     let mut skills = Vec::new();
     if skills_dir.is_dir() {
         for entry in fs::read_dir(skills_dir)? {
