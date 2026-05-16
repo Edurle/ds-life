@@ -168,15 +168,25 @@ fn create_lua() -> anyhow::Result<Lua> {
         async move {
             let rust_val = convert_result
                 .map_err(|e| mlua::Error::external(e))?;
-            let response = tools::llm::llm_chat(
-                &api_key,
-                &model,
-                &base_url,
-                rust_val,
-            )
-            .await
-            .map_err(|e| mlua::Error::external(e))?;
-            Ok(response)
+
+            // 检查是否有流式钩子，有则使用流式 API
+            let hook = tools::llm::take_streaming_hook();
+            let response = if let Some(hook) = hook {
+                let result = tools::llm::llm_chat_streaming(
+                    &api_key,
+                    &model,
+                    &base_url,
+                    rust_val,
+                    |t| hook(t),
+                )
+                .await;
+                // 放回钩子（多步 tool_use 循环可能再次需要）
+                tools::llm::restore_streaming_hook(hook);
+                result
+            } else {
+                tools::llm::llm_chat(&api_key, &model, &base_url, rust_val).await
+            };
+            Ok(response.map_err(|e| mlua::Error::external(e))?)
         }
     })?;
     host.set("llm_chat", host_llm)?;

@@ -12,6 +12,7 @@ use ratatui::{
     Terminal,
 };
 use std::io;
+use std::sync::{Arc, Mutex};
 
 struct TuiState {
     output_text: String,
@@ -66,6 +67,7 @@ pub async fn run_tui(demo: bool) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = TuiState::new(demo);
+    let token_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
     loop {
         let term_size = terminal.size()?;
@@ -108,9 +110,14 @@ pub async fn run_tui(demo: bool) -> Result<()> {
             f.render_widget(input, chunks[1]);
         })?;
 
+        // 处理流式 token（processing 期间持续读取）
+        if state.processing && !state.demo {
+            stream_token_buffer(&mut state, &token_buffer);
+        }
+
         // processing 时继续循环（保持 draw 更新界面）
         if state.processing {
-            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             if state.done {
                 break;
             }
@@ -144,12 +151,18 @@ pub async fn run_tui(demo: bool) -> Result<()> {
                                 state
                                     .push_output(&format!("(Demo Echo) You said: {}", task));
                             } else {
+                                // 设置流式钩子：token 实时写入缓冲区
+                                let tb = token_buffer.clone();
+                                crate::tools::llm::set_streaming_hook(Box::new(move |token| {
+                                    tb.lock().unwrap().push_str(token);
+                                }));
                                 match crate::run_agent_once(&task).await {
                                     Ok(resp) => state.push_output(&resp),
                                     Err(e) => {
                                         state.push_output(&format!("(Error: {})", e));
                                     }
                                 }
+                                crate::tools::llm::clear_streaming_hook();
                             }
                             state.processing = false;
                         }
@@ -219,4 +232,16 @@ async fn process_command(cmd: &str, state: &mut TuiState) {
             state.push_cmd_output("Type /help to see available commands.");
         }
     }
+}
+
+/// 从流式缓冲区读取 token 并追加到输出面板。
+fn stream_token_buffer(state: &mut TuiState, buffer: &Arc<Mutex<String>>) {
+    let s = {
+        let mut buf = buffer.lock().unwrap();
+        if buf.is_empty() {
+            return;
+        }
+        std::mem::take(&mut *buf)
+    };
+    state.output_text.push_str(&s);
 }
