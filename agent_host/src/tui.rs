@@ -143,7 +143,10 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
 
     loop {
         let term_size = terminal.size()?;
-        let panel_height = term_size.height.saturating_sub(7) as usize; // 6 + 1 for status bar
+        // panel_height 与 Percentage(84) 布局一致，避免终端越大误差越大
+        let avail = term_size.height.saturating_sub(2) as usize;
+        let output_h = (avail * 84) / 100;
+        let panel_height = output_h.saturating_sub(2); // 6 + 1 for status bar
 
         terminal.draw(|f| {
             let chunks = Layout::default()
