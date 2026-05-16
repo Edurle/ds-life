@@ -86,6 +86,7 @@ pub async fn run_tui(demo: bool) -> Result<()> {
 
             let total_lines = state.output_text.lines().count();
             let scroll = clamp_scroll(state.scroll_offset, total_lines, panel_height);
+            state.scroll_offset = scroll;
 
             let output = Paragraph::new(state.output_text.clone())
                 .scroll((scroll as u16, 0))
