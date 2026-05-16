@@ -204,6 +204,22 @@ fn create_lua() -> anyhow::Result<Lua> {
     Ok(lua)
 }
 
+// ── 公共函数：运行一次 Agent 任务 ─────────────────────────────
+
+/// 创建 Lua 环境，加载 main_loop.lua，执行任务，返回结果。
+pub async fn run_agent_once(task: &str) -> anyhow::Result<String> {
+    let lua = create_lua()?;
+    let main_loop_code = std::fs::read_to_string(
+        config::workspace_root().join("agent_plugins/system_core/main_loop.lua"),
+    )?;
+    let main_loop: mlua::Table<'_> = lua.load(&main_loop_code).eval()?;
+    let run_agent: mlua::Function<'_> = main_loop.get("run_agent")?;
+    run_agent
+        .call_async::<&str, String>(task)
+        .await
+        .map_err(|e| anyhow::anyhow!("Agent error: {}", e))
+}
+
 // ── 入口 ──────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -211,27 +227,21 @@ async fn main() -> anyhow::Result<()> {
     // 模式选择：`cargo run tui` → TUI，默认 → CLI
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "tui" {
-        return tui::run_tui();
+        if args.len() > 2 {
+            // cargo run tui -- "task": 单次任务后退出
+            let result = run_agent_once(&args[2]).await?;
+            println!("Agent response:\n{}", result);
+            return Ok(());
+        }
+        return tui::run_tui().await;
     }
 
     // ── CLI 模式 ──
-    let task = "What is the current working directory? Use bash to run pwd.";
+    let task = "List the files in the current directory, then read Cargo.toml and summarize what dependencies this project uses.";
 
     let mut detector = recovery::CrashDetector::new(5);
 
-    let result: Result<String, anyhow::Error> = async {
-        let lua = create_lua()?;
-        let main_loop_code = std::fs::read_to_string(
-            config::workspace_root().join("agent_plugins/system_core/main_loop.lua"),
-        )?;
-        let main_loop: mlua::Table<'_> = lua.load(&main_loop_code).eval()?;
-        let run_agent: mlua::Function<'_> = main_loop.get("run_agent")?;
-        run_agent
-            .call_async::<&str, String>(task)
-            .await
-            .map_err(|e| anyhow::anyhow!("Agent error: {}", e))
-    }
-    .await;
+    let result = run_agent_once(task).await;
 
     match &result {
         Ok(resp) => {
