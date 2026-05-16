@@ -1,51 +1,87 @@
-# 快捷键系统
+# 命令系统
 
-> 当前：TUI 只有 Esc 退出，Enter 发送。
-> 目标：类 vim 快捷键，提升可用性。
+> 原方案：快捷键（Ctrl+S/Ctrl+L/...）。
+> 问题：Ctrl 组合键与 tmux、screen、readline 冲突严重。
+> 改为：Slash 命令模式（类似 Claude Code 的 `/compact`），在输入框键入 `/xxx` 执行。
 
-## 快捷键映射
+## 命令列表
 
-| 快捷键 | 功能 | 说明 |
-|--------|------|------|
-| `Ctrl+S` | 保存当前会话 | 若 persistence 已实现 |
-| `Ctrl+L` | 清屏 | 清除输出面板 |
-| `Ctrl+R` | 重放上一条消息 | 重新输入上次发送的消息 |
-| `Ctrl+W` | 删除一个词 | 输入框中向后删除单词 |
-| `Ctrl+A` | 跳到行首 | Home |
-| `Ctrl+E` | 跳到行尾 | End |
-| `Ctrl+P` / `↑` | 历史消息上翻 | 从历史列表中选择上一条 |
-| `Ctrl+N` / `↓` | 历史消息下翻 | 从历史列表中选择下一条 |
-| `Esc` | 退出 | 已有 |
+| 命令 | 别名 | 功能 | 对应思路 |
+|------|------|------|---------|
+| `/clear` | `/c` | 清空输出面板 | Ctrl+L |
+| `/save` | `/s` | 保存当前会话到 SQLite | Ctrl+S |
+| `/history` | `/h`, `/hist` | 列出历史会话，`/h 2` 加载 | Ctrl+R |
+| `/load N` | `/l N` | 加载第 N 个历史会话 | — |
+| `/new` | `/n` | 新建空会话 | — |
+| `/replay` | `/rp` | 重新发送上一次的消息 | Ctrl+P |
+| `/help` | `/?` | 显示所有命令 | — |
+| `/quit` | `/q`, `/exit` | 退出程序 | Esc |
+| `/compact` | `/cmp` | 折叠输出面板早期内容 | — |
 
-## 实现
+## 设计
 
-`src/tui.rs` 中 `Event::Key` 处理分支，扩展 `KeyCode` 匹配：
+### 输入处理
+
+在 `tui.rs` 的 `Enter` 处理分支中：
 
 ```rust
-match key.code {
-    KeyCode::Esc => break,
-    KeyCode::Enter => { /* 发送 */ },
-    KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
-        // Ctrl+S: 保存
-    },
-    KeyCode::Char('l') if key.modifiers == KeyModifiers::CONTROL => {
-        output_text.clear();  // Ctrl+L: 清屏
-    },
-    // ...
+if task.starts_with('/') {
+    process_command(&task, &mut state).await;
+} else {
+    run_agent_once(&task).await;
 }
 ```
 
-依赖 `KeyModifiers` 字段（`event::KeyEvent`）。
+### 输出
 
-## 历史记录
+命令执行结果以 `#` 前缀追加到输出面板：
 
-内存中维护 `Vec<String>` history，Ctrl+P/N 翻找。
+```
+#  clear — 面板已清空
+#  save — 会话保存成功
+#  history — 找到 3 个历史会话
+  [1] 2026-05-16  pwd test
+  [2] 2026-05-16  dep list
+#  load 2 — 已加载会话 #2
+```
+
+### 与普通消息区分
+
+命令执行**不消耗 API Token**，全部由 Rust 侧处理。
+
+## 实现
+
+```rust
+async fn process_command(cmd: &str, state: &mut TuiState) {
+    let parts: Vec<&str> = cmd.split_whitespace().collect();
+    match parts[0] {
+        "/clear" | "/c" => state.output_text.clear(),
+        "/save" | "/s"  => { /* persistence::save_session() */ },
+        "/history" | "/h" | "/hist" => { /* 列出会话 */ },
+        "/load" | "/l"  => { /* 加载指定会话 */ },
+        "/new" | "/n"   => { /* 清空消息上下文 */ },
+        "/help" | "/?"  => { /* 打印帮助 */ },
+        "/quit" | "/q" | "/exit" => state.done = true,
+        _ => state.output_text.push_str(&format!("# Unknown: {}\n", cmd)),
+    }
+}
+```
+
+## 优势对比
+
+| 维度 | 快捷键方案 | Slash 命令方案 |
+|------|-----------|---------------|
+| tmux/screen 冲突 | Ctrl+S/A 会冲突 | 无 |
+| 学习成本 | 需记住键位 | 可 /help 查看 |
+| 可扩展性 | 有限组合键 | 任意命名 |
+| 非技术用户 | 键位暗示不足 | 语义自解释 |
 
 ## 实现步骤
 
-1. 扩展 `tui.rs` 的 key handling
-2. 添加历史记录 Vec
-3. 集成保存功能（依赖 02_persistence）
-4. 编译 + TUI 交互测试
+1. `tui.rs` 新增 `process_command` 函数
+2. Enter 分支分流 `/xxx` 命令
+3. 实现 /clear, /help, /quit
+4. 输出样式 `# ` 前缀
+5. 后续接入 persistence 后再实现 /save /history /load
 
 预估工作量：**0.5 天**
