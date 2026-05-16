@@ -24,14 +24,20 @@ struct TuiState {
 
 impl TuiState {
     fn new(demo: bool) -> Self {
-        Self {
-            output_text: String::from("Agent TUI ready. Type /help for commands.\n"),
+        let mut s = Self {
+            output_text: String::new(),
             input_buffer: String::new(),
-            scroll_offset: 0,
+            scroll_offset: usize::MAX,
             processing: false,
             done: false,
             demo,
+        };
+        s.push_output("Agent TUI ready. Type /help for commands.");
+        if demo {
+            s.push_output("[Demo mode] No API calls will be made.");
+            s.push_output("Try: type a message, or use /help to see commands.");
         }
+        s
     }
 
     fn push_output(&mut self, line: &str) {
@@ -44,7 +50,14 @@ impl TuiState {
     }
 }
 
-/// 运行 TUI 交互模式。`demo = true` 时不调用 Agent API，仅模拟。
+fn clamp_scroll(scroll: usize, total_lines: usize, panel_height: usize) -> usize {
+    if total_lines <= panel_height {
+        return 0;
+    }
+    let max_scroll = total_lines - panel_height;
+    scroll.min(max_scroll)
+}
+
 pub async fn run_tui(demo: bool) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -54,13 +67,10 @@ pub async fn run_tui(demo: bool) -> Result<()> {
 
     let mut state = TuiState::new(demo);
 
-    if demo {
-        state.push_output("[Demo mode] No API calls will be made.");
-        state.push_output("Try: type a message (echo), or use /help to see commands.");
-    }
-
     loop {
-        // ── 绘制 ──
+        let term_size = terminal.size()?;
+        let panel_height = term_size.height.saturating_sub(6) as usize;
+
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -74,10 +84,8 @@ pub async fn run_tui(demo: bool) -> Result<()> {
                 "Output"
             };
 
-            let panel_height = chunks[0].height.saturating_sub(2) as usize;
             let total_lines = state.output_text.lines().count();
-            let max_scroll = total_lines.saturating_sub(panel_height);
-            let scroll = state.scroll_offset.min(max_scroll);
+            let scroll = clamp_scroll(state.scroll_offset, total_lines, panel_height);
 
             let output = Paragraph::new(state.output_text.clone())
                 .scroll((scroll as u16, 0))
@@ -99,13 +107,16 @@ pub async fn run_tui(demo: bool) -> Result<()> {
             f.render_widget(input, chunks[1]);
         })?;
 
-        // ── 等待 Agent ──
+        // processing 时继续循环（保持 draw 更新界面）
         if state.processing {
             tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            if state.done {
+                break;
+            }
             continue;
         }
 
-        // ── 键盘事件 ──
+        // 键盘事件
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
@@ -118,13 +129,11 @@ pub async fn run_tui(demo: bool) -> Result<()> {
 
                         if task.starts_with('/') {
                             state.processing = true;
-                            let _ = terminal.draw(|_| {});
                             process_command(&task, &mut state).await;
                             state.processing = false;
                         } else {
                             state.push_output(&format!("> {}", task));
                             state.processing = true;
-                            let _ = terminal.draw(|_| {});
 
                             if state.demo {
                                 tokio::time::sleep(
@@ -145,16 +154,19 @@ pub async fn run_tui(demo: bool) -> Result<()> {
                         }
                         state.scroll_offset = usize::MAX;
                     }
+                    // scroll 值越大越往底部（更新内容）
+                    // PageUp：看更早内容 → scroll 减小
                     KeyCode::PageUp => {
-                        let h = terminal.size()?.height.saturating_sub(6) as usize;
-                        state.scroll_offset = state.scroll_offset.saturating_add(h);
+                        state.scroll_offset =
+                            state.scroll_offset.saturating_sub(panel_height);
                     }
+                    // PageDown：看更新内容 → scroll 增大
                     KeyCode::PageDown => {
-                        let h = terminal.size()?.height.saturating_sub(6) as usize;
-                        state.scroll_offset = state.scroll_offset.saturating_sub(h);
+                        state.scroll_offset =
+                            state.scroll_offset.saturating_add(panel_height);
                     }
-                    KeyCode::Home => state.scroll_offset = usize::MAX,
-                    KeyCode::End => state.scroll_offset = 0,
+                    KeyCode::Home => state.scroll_offset = 0,
+                    KeyCode::End => state.scroll_offset = usize::MAX,
                     KeyCode::Char(c) => state.input_buffer.push(c),
                     KeyCode::Backspace => {
                         state.input_buffer.pop();
