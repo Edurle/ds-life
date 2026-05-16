@@ -157,6 +157,8 @@ fn create_lua() -> anyhow::Result<Lua> {
     let app_config = config::AppConfig::load()
         .expect("Failed to load config. Set ANTHROPIC_API_KEY env var or api_key in ~/.deepseek/config.toml");
 
+    tools::llm::set_context_size(app_config.context_size);
+
     let model = app_config.model.clone();
     let base_url = app_config.base_url.clone();
 

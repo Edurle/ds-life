@@ -29,6 +29,7 @@ pub struct AppConfig {
     pub model: String,
     /// API 基础 URL，会自动追加 `/v1/messages`
     pub base_url: String,
+    pub context_size: u64,
 }
 
 impl AppConfig {
@@ -75,11 +76,25 @@ impl AppConfig {
             })
             .unwrap_or_else(|_| "https://api.deepseek.com/anthropic".to_string());
 
+        let context_size = Self::context_for_model(&model);
+
         Ok(Self {
             api_key,
             model,
             base_url,
+            context_size,
         })
+    }
+
+    /// 根据模型名推断上下文窗口大小。
+    fn context_for_model(model: &str) -> u64 {
+        let m = model.to_lowercase();
+        if m.starts_with("deepseek-v4") { 128_000 }
+        else if m.starts_with("deepseek") { 100_000 }
+        else if m.contains("haiku") { 200_000 }
+        else if m.contains("sonnet") { 200_000 }
+        else if m.contains("opus") { 200_000 }
+        else { 128_000 }
     }
 
     /// 读取并解析 ~/.deepseek/config.toml

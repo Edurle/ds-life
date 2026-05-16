@@ -31,6 +31,20 @@ impl TokenUsage {
 lazy_static::lazy_static! {
     static ref STREAMING_HOOK: Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>> = Mutex::new(None);
     static ref TOKEN_USAGE: Mutex<TokenUsage> = Mutex::new(TokenUsage::default());
+    static ref CONTEXT_SIZE: Mutex<u64> = Mutex::new(128_000);
+}
+
+/// 设置当前模型的上下文窗口大小。
+pub fn set_context_size(size: u64) {
+    *CONTEXT_SIZE.lock().unwrap() = size;
+}
+
+/// 返回上下文使用百分比（已用 input / 总上下文）。
+pub fn context_usage_pct() -> Option<f64> {
+    let usage = *TOKEN_USAGE.lock().unwrap();
+    let ctx = *CONTEXT_SIZE.lock().unwrap();
+    if ctx == 0 || usage.input_tokens == 0 { return None; }
+    Some(usage.input_tokens as f64 / ctx as f64 * 100.0)
 }
 
 pub fn get_token_usage() -> TokenUsage {

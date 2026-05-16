@@ -20,6 +20,8 @@ struct StyledLine {
     color: Option<Color>,
 }
 
+const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
 struct TuiState {
     output_rows: Vec<StyledLine>,
     input_buffer: String,
@@ -28,8 +30,8 @@ struct TuiState {
     processing: bool,
     done: bool,
     demo: bool,
-    /// 用于 streaming 累积当前行
     stream_buf: String,
+    spinner_idx: usize,
 }
 
 impl TuiState {
@@ -43,6 +45,7 @@ impl TuiState {
             done: false,
             demo,
             stream_buf: String::new(),
+            spinner_idx: 0,
         };
         s.push_line("Agent TUI ready. Type /help for commands.", None);
         if demo {
@@ -197,23 +200,33 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
             // ── 状态栏 ──
             let mode_tag = if state.demo { "demo" } else { "normal" };
 
-            // token 用量
+            // token 用量 + 上下文
             let usage = crate::tools::llm::get_token_usage();
-            let (rate_str, cache_str) = if usage.input_tokens > 0 || usage.output_tokens > 0 {
-                let c = match usage.cache_hit_rate() {
-                    Some(r) => format!("cache {}%", (r * 100.0) as u8),
+            let ctx_pct = crate::tools::llm::context_usage_pct();
+
+            let token_str = if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                let cache = match usage.cache_hit_rate() {
+                    Some(r) => format!("cache {:.0}%", r * 100.0),
                     None => "no-cache".to_string(),
                 };
-                (format!("i{} o{}", usage.input_tokens, usage.output_tokens), c)
+                let ctx = match ctx_pct {
+                    Some(p) => format!("ctx {:.0}%", p),
+                    None => String::new(),
+                };
+                format!("tok i{}/o{}  {}  {}", usage.input_tokens, usage.output_tokens, cache, ctx)
             } else {
-                (String::new(), String::new())
+                String::new()
             };
 
-            let status = if rate_str.is_empty() {
-                format!(" [{}]  {}/{}", mode_tag, scroll, total_lines)
+            let spinner = if state.processing {
+                SPINNER[state.spinner_idx]
             } else {
-                format!(" [{}]  {}/{}  {}  {}", mode_tag, scroll, total_lines, rate_str, cache_str)
+                ' '
             };
+            let status = format!(
+                " {} [{}]  {}/{}  {}",
+                spinner, mode_tag, scroll, total_lines, token_str
+            );
             let status_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
             let status_bar = Paragraph::new(Line::from(vec![
                 Span::styled(status, status_style),
@@ -237,6 +250,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
         }
 
         if state.processing {
+            state.spinner_idx = (state.spinner_idx + 1) % SPINNER.len();
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
             if state.done {
                 break;
