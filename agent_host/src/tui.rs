@@ -24,6 +24,7 @@ struct TuiState {
     output_rows: Vec<StyledLine>,
     input_buffer: String,
     scroll_offset: usize,
+    input_scroll: usize,
     processing: bool,
     done: bool,
     demo: bool,
@@ -37,6 +38,7 @@ impl TuiState {
             output_rows: Vec::new(),
             input_buffer: String::new(),
             scroll_offset: usize::MAX,
+            input_scroll: 0,
             processing: false,
             done: false,
             demo,
@@ -154,7 +156,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                 .margin(1)
                 .constraints([
                     Constraint::Percentage(84),
-                    Constraint::Length(3),
+                    Constraint::Length(4),
                     Constraint::Length(1),
                 ])
                 .split(f.size());
@@ -169,6 +171,11 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
             let scroll = clamp_scroll(state.scroll_offset, total_lines, panel_height);
             state.scroll_offset = scroll;
 
+            // 输入框滚动：内部可用 2 行（Height(4) - 边框 2）
+            let input_visible = (chunks[1].height as usize).saturating_sub(2);
+            let input_total = state.input_buffer.lines().count() + 1;
+            state.input_scroll = clamp_scroll(state.input_scroll, input_total, input_visible);
+
             let output = Paragraph::new(state.render_text())
                 .scroll((scroll as u16, 0))
                 .wrap(Wrap { trim: false })
@@ -182,6 +189,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                 "Input (Enter to send, Esc to quit)"
             };
             let input = Paragraph::new(state.input_buffer.clone())
+                .scroll((state.input_scroll as u16, 0))
                 .wrap(Wrap { trim: false })
                 .block(Block::default().title(input_title).borders(Borders::ALL));
             f.render_widget(input, chunks[1]);
@@ -297,9 +305,13 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                     }
                     KeyCode::Home => state.scroll_offset = 0,
                     KeyCode::End => state.scroll_offset = usize::MAX,
-                    KeyCode::Char(c) => state.input_buffer.push(c),
+                    KeyCode::Char(c) => {
+                        state.input_buffer.push(c);
+                        state.input_scroll = usize::MAX;
+                    }
                     KeyCode::Backspace => {
                         state.input_buffer.pop();
+                        state.input_scroll = usize::MAX;
                     }
                     _ => {}
                 }
