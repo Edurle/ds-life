@@ -227,13 +227,14 @@ async fn main() -> anyhow::Result<()> {
     // 模式选择：`cargo run tui` → TUI，默认 → CLI
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 && args[1] == "tui" {
-        if args.len() > 2 {
+        let demo = args.iter().any(|a| a == "--demo" || a == "-d");
+        if args.len() > 2 && !args[2].starts_with('-') {
             // cargo run tui -- "task": 单次任务后退出
             let result = run_agent_once(&args[2]).await?;
             println!("Agent response:\n{}", result);
             return Ok(());
         }
-        return tui::run_tui().await;
+        return tui::run_tui(demo).await;
     }
 
     // ── CLI 模式 ──
