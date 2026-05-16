@@ -196,21 +196,24 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
 
             // ── 状态栏 ──
             let mode_tag = if state.demo { "demo" } else { "normal" };
-            let scroll_pct = if total_lines <= panel_height {
-                100
+
+            // token 用量
+            let usage = crate::tools::llm::get_token_usage();
+            let (rate_str, cache_str) = if usage.input_tokens > 0 || usage.output_tokens > 0 {
+                let c = match usage.cache_hit_rate() {
+                    Some(r) => format!("cache {}%", (r * 100.0) as u8),
+                    None => "no-cache".to_string(),
+                };
+                (format!("i{} o{}", usage.input_tokens, usage.output_tokens), c)
             } else {
-                // scroll = 0 是顶部，max_scroll = total_lines - panel_height 是底部
-                let max_scroll = total_lines - panel_height;
-                if max_scroll == 0 {
-                    100
-                } else {
-                    ((max_scroll - scroll) * 100) / max_scroll
-                }
+                (String::new(), String::new())
             };
-            let status = format!(
-                " [{}]  lines {}/{}  {}%",
-                mode_tag, scroll, total_lines, scroll_pct,
-            );
+
+            let status = if rate_str.is_empty() {
+                format!(" [{}]  {}/{}", mode_tag, scroll, total_lines)
+            } else {
+                format!(" [{}]  {}/{}  {}  {}", mode_tag, scroll, total_lines, rate_str, cache_str)
+            };
             let status_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
             let status_bar = Paragraph::new(Line::from(vec![
                 Span::styled(status, status_style),

@@ -3,9 +3,48 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::Duration;
 
+/// Token 用量统计。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_creation_tokens: u64,
+}
+
+impl TokenUsage {
+    pub fn cache_hit_rate(&self) -> Option<f64> {
+        let total = self.cache_read_tokens + self.cache_creation_tokens;
+        if total == 0 { return None; }
+        Some(self.cache_read_tokens as f64 / total as f64)
+    }
+
+    #[allow(dead_code)]
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
+    }
+}
+
 lazy_static::lazy_static! {
-    /// 流式回调钩子。设置后 `llm_chat` 自动切换为流式模式。
     static ref STREAMING_HOOK: Mutex<Option<Box<dyn Fn(&str) + Send + Sync>>> = Mutex::new(None);
+    static ref TOKEN_USAGE: Mutex<TokenUsage> = Mutex::new(TokenUsage::default());
+}
+
+pub fn get_token_usage() -> TokenUsage {
+    *TOKEN_USAGE.lock().unwrap()
+}
+
+fn accumulate_usage(response: &Value) {
+    if let Some(usage) = response.get("usage") {
+        let mut global = TOKEN_USAGE.lock().unwrap();
+        global.input_tokens += usage["input_tokens"].as_u64().unwrap_or(0);
+        global.output_tokens += usage["output_tokens"].as_u64().unwrap_or(0);
+        global.cache_read_tokens += usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+        global.cache_creation_tokens += usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+    }
 }
 
 /// 设置全局流式回调钩子。
@@ -189,6 +228,10 @@ pub async fn llm_chat(
                 let text = r.text().await?;
 
                 if status.is_success() {
+                    // 解析 usage 并累计
+                    if let Ok(json) = serde_json::from_str::<Value>(&text) {
+                        accumulate_usage(&json);
+                    }
                     return Ok(text);
                 }
 
@@ -377,8 +420,24 @@ fn parse_sse_line(
             if let Some(sr) = delta["stop_reason"].as_str() {
                 *stop_reason = Some(sr.to_string());
             }
+            // 流式输出的 token 用量在 message_delta 中
+            if let Some(usage) = data.get("usage") {
+                let mut global = TOKEN_USAGE.lock().unwrap();
+                global.output_tokens += usage["output_tokens"].as_u64().unwrap_or(0);
+            }
         }
-        "message_start" | "message_stop" | "ping" => {
+        "message_start" => {
+            // 流式的 input token 在 message_start 中
+            if let Some(msg) = data.get("message") {
+                if let Some(usage) = msg.get("usage") {
+                    let mut global = TOKEN_USAGE.lock().unwrap();
+                    global.input_tokens += usage["input_tokens"].as_u64().unwrap_or(0);
+                    global.cache_read_tokens += usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+                    global.cache_creation_tokens += usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+                }
+            }
+        }
+        "message_stop" | "ping" => {
             // 忽略
         }
         _ => {
