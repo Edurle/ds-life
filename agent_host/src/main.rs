@@ -151,7 +151,14 @@ fn create_lua() -> anyhow::Result<Lua> {
             .map_err(|e| mlua::Error::external(e))
     })?;
     host.set("edit_session_rollback", host_rollback)?;
-
+ 
+    // --- 同步工具：apply_patch ---
+    let host_apply_patch = lua.create_function(|_, (path, ops_json): (String, String)| {
+        tools::fs::apply_patch(&path, &ops_json)
+            .map_err(|e| mlua::Error::external(e))
+    })?;
+    host.set("apply_patch", host_apply_patch)?;
+ 
     // --- 异步工具：llm_chat ---
     // 从配置文件 / 环境变量加载配置
     let app_config = config::AppConfig::load()

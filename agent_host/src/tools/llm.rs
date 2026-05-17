@@ -118,8 +118,33 @@ const TOOLS_DEFINITION: &str = r#"[
         }
     },
     {
+        "name": "apply_patch",
+        "description": "Apply precise line-level edits to a file. Each operation is one of: replace (start_line/end_line → new_text), delete (start_line/end_line), insert_after (line → new_text), insert_before (line → new_text). Operations are applied in order.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative file path"},
+                "operations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["replace", "delete", "insert_after", "insert_before"]},
+                            "start_line": {"type": "integer", "description": "Starting line (1-based, for replace/delete)"},
+                            "end_line": {"type": "integer", "description": "Ending line (inclusive, for replace/delete)"},
+                            "line": {"type": "integer", "description": "Target line (1-based, for insert_after/insert_before)"},
+                            "new_text": {"type": "string", "description": "New content (for replace/insert operations)"}
+                        },
+                        "required": ["action"]
+                    }
+                }
+            },
+            "required": ["path", "operations"]
+        }
+    },
+    {
         "name": "bash",
-        "description": "Run a shell command in the workspace. Use for file operations, builds, and system queries.",
+        "description": "Run a shell command in the workspace.",
         "input_schema": {
             "type": "object",
             "properties": {
