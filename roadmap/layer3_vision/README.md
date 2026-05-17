@@ -10,3 +10,4 @@
 | 02 | 自托管 IDE | [02_self_hosted_ide.md](02_self_hosted_ide.md) | 概念 |
 | 03 | 实时协奏模式 | [03_live_mode.md](03_live_mode.md) | 概念 |
 | 04 | 自然语言流水线 | [04_nl_pipeline.md](04_nl_pipeline.md) | 概念 |
+| 05 | Lua 驱动的可组合渲染引擎 | [05_lua_renderer.md](05_lua_renderer.md) | 概念 |
