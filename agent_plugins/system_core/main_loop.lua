@@ -6,9 +6,17 @@
 -- llm_chat 返回的是原始 JSON 字符串（来自 Anthropic API），
 -- 需要用 json.decode 解析后获取 content / stop_reason 等字段。
 
-local function run_agent(task, max_steps)
+local function run_agent(task, max_steps, initial_messages)
     max_steps = max_steps or 15
-    local messages = { {role = "user", content = task} }
+    local messages = {}
+    if initial_messages and #initial_messages > 0 then
+        for _, msg in ipairs(initial_messages) do
+            table.insert(messages, msg)
+        end
+        table.insert(messages, {role = "user", content = task})
+    else
+        messages = { {role = "user", content = task} }
+    end
 
     for step = 1, max_steps do
         local response_str = host.llm_chat(messages)

@@ -12,8 +12,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Terminal,
 };
+use serde_json;
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 struct StyledLine {
     text: String,
@@ -32,6 +34,10 @@ struct TuiState {
     demo: bool,
     stream_buf: String,
     spinner_idx: usize,
+    /// 当前会话 ID
+    session_id: Option<String>,
+    /// 历史消息（Anthropic 格式）
+    history_messages: Vec<serde_json::Value>,
 }
 
 impl TuiState {
@@ -46,6 +52,8 @@ impl TuiState {
             demo,
             stream_buf: String::new(),
             spinner_idx: 0,
+            session_id: None,
+            history_messages: Vec::new(),
         };
         s.push_line("Agent TUI ready. Type /help for commands.", None);
         if demo {
@@ -277,35 +285,51 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
                             state.push_user_input(&format!("> {}", task));
                             state.processing = true;
 
+                            // 记录用户消息
+                            state.history_messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": task,
+                            }));
+
                             if state.demo {
-                                tokio::time::sleep(
-                                    tokio::time::Duration::from_millis(800),
-                                )
-                                .await;
+                                tokio::time::sleep(Duration::from_millis(800)).await;
                                 let resp = format!("(Demo Echo) You said: {}", task);
                                 state.push_echo(&resp);
+                                state.history_messages.push(serde_json::json!({
+                                    "role": "assistant",
+                                    "content": resp,
+                                }));
                             } else {
                                 let tb = token_buffer.clone();
                                 crate::tools::llm::set_streaming_hook(Box::new(move |token| {
                                     tb.lock().unwrap().push_str(token);
                                 }));
-                                match crate::run_agent_once(&task).await {
-                                    Ok(resp) => state.push_output(&resp),
+                                let history = if state.history_messages.is_empty() {
+                                    None
+                                } else {
+                                    // 去掉最后一条 user 消息（它作为 task 传入了）
+                                    let prefix = &state.history_messages[..state.history_messages.len() - 1];
+                                    Some(prefix)
+                                };
+                                match crate::run_agent_once(&task, history).await {
+                                    Ok(resp) => {
+                                        state.push_output(&resp);
+                                        state.history_messages.push(serde_json::json!({
+                                            "role": "assistant",
+                                            "content": resp,
+                                        }));
+                                    }
                                     Err(e) => state.push_error(&format!("(Error: {})", e)),
                                 }
                                 crate::tools::llm::clear_streaming_hook();
-                                // 确保流式 token 全部刷新
                                 let rest = {
                                     let mut buf = token_buffer.lock().unwrap();
                                     std::mem::take(&mut *buf)
                                 };
-                                if !rest.is_empty() {
-                                    state.push_token(&rest);
-                                }
-                                // 将 stream_buf 刷入 output_rows
+                                if !rest.is_empty() { state.push_token(&rest); }
                                 if !state.stream_buf.is_empty() {
-                                    let text = std::mem::take(&mut state.stream_buf);
-                                    state.push_output(&text);
+                                    let t = std::mem::take(&mut state.stream_buf);
+                                    state.push_output(&t);
                                 }
                             }
                             state.processing = false;
@@ -358,11 +382,12 @@ async fn process_command(
         "/help" | "/?" | "/h" => {
             state.push_output("");
             state.push_cmd_output("Available commands:");
+            state.push_cmd_output("/new, /n         - Start a new session");
             state.push_cmd_output("/clear, /c       - Clear output panel");
             state.push_cmd_output("/echo <text>     - Echo text back");
             state.push_cmd_output("/save, /s        - Save current session");
             state.push_cmd_output("/history, /hist  - List saved sessions");
-            state.push_cmd_output("/load <N>        - Load session N from history");
+            state.push_cmd_output("/load <N>        - Load and restore session N");
             state.push_cmd_output("/help, /?, /h    - Show this help");
             state.push_cmd_output("/quit, /q, /exit - Exit program");
             state.push_output("");
@@ -378,35 +403,47 @@ async fn process_command(
                 state.push_echo(&format!("echo: {}", text));
             }
         }
+        "/new" | "/n" => {
+            state.output_rows.clear();
+            state.history_messages.clear();
+            state.session_id = None;
+            state.push_output("Agent TUI ready. Type /help for commands.");
+            state.push_cmd_output("New session started.");
+        }
         "/save" | "/s" => {
             let conn = match db {
                 Some(c) => c,
                 None => { state.push_cmd_output("No database."); return; }
             };
-            let content = state
-                .output_rows
-                .iter()
-                .map(|r| r.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+            if state.history_messages.is_empty() {
+                state.push_cmd_output("Nothing to save.");
+                return;
+            }
             let title = state
-                .output_rows
+                .history_messages
                 .iter()
-                .find(|r| !r.text.starts_with('#') && !r.text.trim().is_empty())
-                .map(|r| r.text.as_str())
-                .unwrap_or("(untitled)")
-                .to_string();
-            let sid = match crate::persistence::create_session(&conn.lock().unwrap(), &title) {
-                Ok(id) => id,
-                Err(e) => { state.push_cmd_output(&format!("Save error: {}", e)); return; }
+                .find_map(|m| m["role"].as_str().and_then(|r| {
+                    if r == "user" { m["content"].as_str().map(|s| s.to_string()) }
+                    else { None }
+                }))
+                .unwrap_or_else(|| "(untitled)".to_string());
+            let title = if title.len() > 60 { format!("{}...", &title[..57]) } else { title };
+
+            let conn = conn.lock().unwrap();
+            let sid = match &state.session_id {
+                Some(id) => id.clone(),
+                None => {
+                    match crate::persistence::create_session(&conn, &title) {
+                        Ok(id) => { state.session_id = Some(id.clone()); id }
+                        Err(e) => { state.push_cmd_output(&format!("Save error: {}", e)); return; }
+                    }
+                }
             };
-            if let Err(e) = crate::persistence::append_message(
-                &conn.lock().unwrap(), &sid, "session_output", &content, 0,
-            ) {
+            if let Err(e) = crate::persistence::save_messages(&conn, &sid, &state.history_messages) {
                 state.push_cmd_output(&format!("Save error: {}", e));
                 return;
             }
-            state.push_cmd_output(&format!("Session saved [{}]: {}", &sid[..8], title));
+            state.push_cmd_output(&format!("Session saved [{:.8}]: {}", sid, title));
         }
         "/history" | "/hist" => {
             let conn = match db {
@@ -446,7 +483,7 @@ async fn process_command(
                 Ok(s) => s,
                 Err(e) => { state.push_cmd_output(&format!("List error: {}", e)); return; }
             };
-            let (sid, _title, _updated, _) = match sessions.get(idx) {
+            let (sid, title, _updated, _) = match sessions.get(idx) {
                 Some(s) => s.clone(),
                 None => { state.push_cmd_output(&format!("Session #{} not found.", idx + 1)); return; }
             };
@@ -454,25 +491,33 @@ async fn process_command(
                 Ok(m) => m,
                 Err(e) => { state.push_cmd_output(&format!("Load error: {}", e)); return; }
             };
-            let restored = msgs
-                .iter()
-                .find(|m| m["role"] == "session_output")
-                .and_then(|m| m["content"].as_str())
-                .unwrap_or("");
-            state.push_cmd_output(&format!("Restored session {} ({} msgs)", idx + 1, msgs.len()));
-            if !restored.is_empty() {
-                // 重建 output_rows
-                state.output_rows = restored
-                    .lines()
-                    .map(|line| StyledLine {
-                        text: line.to_string(),
-                        color: None,
-                    })
-                    .collect();
-                state.push_cmd_output("Session content restored.");
-            } else {
-                state.push_cmd_output("No saved output content.");
+            if msgs.is_empty() {
+                state.push_cmd_output("Session is empty.");
+                return;
             }
+            // 恢复历史消息（用于后续对话上下文）
+            state.history_messages = msgs.clone();
+            state.session_id = Some(sid);
+
+            // 重建输出面板
+            state.output_rows.clear();
+            state.output_rows.push(StyledLine {
+                text: format!("--- Loading session: {} ---", title),
+                color: Some(Color::Cyan),
+            });
+            for msg in &msgs {
+                let role = msg["role"].as_str().unwrap_or("");
+                let content = match msg["content"].as_str() {
+                    Some(s) => s.to_string(),
+                    None => serde_json::to_string(&msg["content"]).unwrap_or_default(),
+                };
+                match role {
+                    "user" => state.push_user_input(&format!("> {}", content)),
+                    "assistant" => state.push_output(&content),
+                    _ => state.push_output(&content),
+                }
+            }
+            state.push_cmd_output(&format!("Session {} restored ({} msgs). You can continue chatting.", idx + 1, msgs.len()));
         }
         "/quit" | "/q" | "/exit" => state.done = true,
         _ => {

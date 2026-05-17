@@ -220,17 +220,34 @@ fn create_lua() -> anyhow::Result<Lua> {
 // ── 公共函数：运行一次 Agent 任务 ─────────────────────────────
 
 /// 创建 Lua 环境，加载 main_loop.lua，执行任务，返回结果。
-pub async fn run_agent_once(task: &str) -> anyhow::Result<String> {
+/// `history`：可选的历史消息（Anthropic API 格式），作为本轮上下文前缀。
+pub async fn run_agent_once(task: &str, history: Option<&[serde_json::Value]>) -> anyhow::Result<String> {
     let lua = create_lua()?;
     let main_loop_code = std::fs::read_to_string(
         config::workspace_root().join("agent_plugins/system_core/main_loop.lua"),
     )?;
     let main_loop: mlua::Table<'_> = lua.load(&main_loop_code).eval()?;
     let run_agent: mlua::Function<'_> = main_loop.get("run_agent")?;
-    run_agent
-        .call_async::<&str, String>(task)
-        .await
-        .map_err(|e| anyhow::anyhow!("Agent error: {}", e))
+
+    // 将 history 转为 Lua 值
+    let history_lua = if let Some(h) = history {
+        let json_str = serde_json::to_string(h)?;
+        let history_val: serde_json::Value = serde_json::from_str(&json_str)?;
+        Some(value_to_lua(&lua, &history_val).map_err(|e| anyhow::anyhow!("{}", e))?)
+    } else {
+        None
+    };
+
+    match history_lua {
+        Some(hl) => run_agent
+            .call_async::<_, String>((task, 15, hl))
+            .await
+            .map_err(|e| anyhow::anyhow!("Agent error: {}", e)),
+        None => run_agent
+            .call_async::<&str, String>(task)
+            .await
+            .map_err(|e| anyhow::anyhow!("Agent error: {}", e)),
+    }
 }
 
 // ── 入口 ──────────────────────────────────────────────────────
@@ -243,7 +260,7 @@ async fn main() -> anyhow::Result<()> {
         let demo = args.iter().any(|a| a == "--demo" || a == "-d");
         if args.len() > 2 && !args[2].starts_with('-') {
             // cargo run tui -- "task": 单次任务后退出
-            let result = run_agent_once(&args[2]).await?;
+            let result = run_agent_once(&args[2], None).await?;
             println!("Agent response:\n{}", result);
             return Ok(());
         }
@@ -256,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut detector = recovery::CrashDetector::new(5);
 
-    let result = run_agent_once(task).await;
+    let result = run_agent_once(task, None).await;
 
     match &result {
         Ok(resp) => {
