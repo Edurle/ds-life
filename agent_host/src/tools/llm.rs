@@ -143,6 +143,18 @@ const TOOLS_DEFINITION: &str = r#"[
         }
     },
     {
+        "name": "compile_with_feedback",
+        "description": "Run cargo check or cargo build and return structured compile errors (file, line, column, error code, message, snippet). Use this to detect compilation errors after making changes.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "crate_dir": {"type": "string", "description": "Directory containing Cargo.toml (default: .)"},
+                "check_only": {"type": "boolean", "description": "Run cargo check (fast) instead of cargo build (default: true)"}
+            },
+            "required": []
+        }
+    },
+    {
         "name": "bash",
         "description": "Run a shell command in the workspace.",
         "input_schema": {

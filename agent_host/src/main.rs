@@ -152,6 +152,13 @@ fn create_lua() -> anyhow::Result<Lua> {
     })?;
     host.set("edit_session_rollback", host_rollback)?;
  
+    // --- 同步工具：compile_with_feedback ---
+    let host_compile = lua.create_function(|_, (crate_dir, check_only): (String, bool)| {
+        tools::compile::compile_with_feedback(&crate_dir, check_only)
+            .map_err(|e| mlua::Error::external(e))
+    })?;
+    host.set("compile_with_feedback", host_compile)?;
+
     // --- 同步工具：apply_patch ---
     let host_apply_patch = lua.create_function(|_, (path, ops_json): (String, String)| {
         tools::fs::apply_patch(&path, &ops_json)

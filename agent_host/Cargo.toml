@@ -17,4 +17,5 @@ lazy_static = "1.5"
 toml = "0.8"
 dirs = "5"
 futures-util = "0.3"
+regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }

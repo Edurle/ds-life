@@ -74,6 +74,8 @@ local function run_agent(task, max_steps, initial_messages)
                             return handler(tool_input.session_id, tool_input.message)
                         elseif tool_name == "edit_session_rollback" then
                             return handler(tool_input.session_id)
+                        elseif tool_name == "compile_with_feedback" then
+                            return handler(tool_input.crate_dir or ".", tool_input.check_only or true)
                         elseif tool_name == "apply_patch" then
                             return handler(tool_input.path, json.encode(tool_input.operations))
                         else
