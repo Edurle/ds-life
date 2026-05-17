@@ -89,8 +89,8 @@ impl AppConfig {
     /// 根据模型名推断上下文窗口大小。
     fn context_for_model(model: &str) -> u64 {
         let m = model.to_lowercase();
-        if m.starts_with("deepseek-v4") { 128_000 }
-        else if m.starts_with("deepseek") { 100_000 }
+        if m.starts_with("deepseek-v4") { 1_000_000 }
+        else if m.starts_with("deepseek") { 128_000 }
         else if m.contains("haiku") { 200_000 }
         else if m.contains("sonnet") { 200_000 }
         else if m.contains("opus") { 200_000 }
