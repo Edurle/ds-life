@@ -3,3 +3,4 @@ agent_host/target/
 *.swo
 *~
 .DS_Store
+.deepseek/
