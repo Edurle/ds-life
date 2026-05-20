@@ -159,6 +159,13 @@ fn create_lua() -> anyhow::Result<Lua> {
     })?;
     host.set("compile_with_feedback", host_compile)?;
 
+    // --- Git 工具 ---
+    let host_git = lua.create_function(|_lua, ()| {
+        tools::git::git_changes()
+            .map_err(|e| mlua::Error::external(e))
+    })?;
+    host.set("git_changes", host_git)?;
+
     // --- 搜索工具 ---
     let host_grep = lua.create_function(|_, (pat, s_path, inc, ctx, max): (String, String, String, usize, usize)| {
         tools::search::grep_files(&pat, &s_path, &inc, ctx, max)

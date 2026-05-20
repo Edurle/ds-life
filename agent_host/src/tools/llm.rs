@@ -172,6 +172,11 @@ const TOOLS_DEFINITION: &str = r#"[
         }
     },
     {
+        "name": "git_changes",
+        "description": "Show current git status including branch, dirty flag, structured file changes, and diff. Use after making code changes to review what was modified.",
+        "input_schema": { "type": "object", "properties": {}, "required": [] }
+    },
+    {
         "name": "compile_with_feedback",
         "description": "Run cargo check or cargo build and return structured compile errors (file, line, column, error code, message, snippet). Use this to detect compilation errors after making changes.",
         "input_schema": {
