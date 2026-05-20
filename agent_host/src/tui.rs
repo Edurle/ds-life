@@ -34,6 +34,8 @@ struct TuiState {
     demo: bool,
     stream_buf: String,
     spinner_idx: usize,
+    /// 请求重启 TUI
+    want_reload: bool,
     /// 当前会话 ID
     session_id: Option<String>,
     /// 历史消息（Anthropic 格式）
@@ -52,6 +54,7 @@ impl TuiState {
             demo,
             stream_buf: String::new(),
             spinner_idx: 0,
+            want_reload: false,
             session_id: None,
             history_messages: Vec::new(),
         };
@@ -143,7 +146,7 @@ fn clamp_scroll(scroll: usize, total_lines: usize, panel_height: usize) -> usize
     scroll.min(max_scroll)
 }
 
-pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()> {
+pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<bool> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -366,7 +369,7 @@ pub async fn run_tui(demo: bool, db: Option<rusqlite::Connection>) -> Result<()>
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    Ok(())
+    Ok(state.want_reload)
 }
 
 async fn process_command(
@@ -388,6 +391,7 @@ async fn process_command(
             state.push_cmd_output("/save, /s        - Save current session");
             state.push_cmd_output("/history, /hist  - List saved sessions");
             state.push_cmd_output("/load <N>        - Load and restore session N");
+            state.push_cmd_output("/reload, /r      - Reload TUI (after recompile)");
             state.push_cmd_output("/help, /?, /h    - Show this help");
             state.push_cmd_output("/quit, /q, /exit - Exit program");
             state.push_output("");
@@ -518,6 +522,10 @@ async fn process_command(
                 }
             }
             state.push_cmd_output(&format!("Session {} restored ({} msgs). You can continue chatting.", idx + 1, msgs.len()));
+        }
+        "/reload" | "/r" => {
+            state.done = true;
+            state.want_reload = true;
         }
         "/quit" | "/q" | "/exit" => state.done = true,
         _ => {

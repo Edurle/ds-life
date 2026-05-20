@@ -298,8 +298,20 @@ async fn main() -> anyhow::Result<()> {
             println!("Agent response:\n{}", result);
             return Ok(());
         }
-        let db = persistence::init_db().ok();
-        return tui::run_tui(demo, db).await;
+        let mut db = persistence::init_db().ok();
+        loop {
+            let want_reload = tui::run_tui(demo, db.take()).await?;
+            if !want_reload {
+                break;
+            }
+            use std::os::unix::process::CommandExt;
+            let exe = std::env::current_exe()?;
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let _ = std::process::Command::new(exe).args(&args).exec();
+            // exec 替换当前进程，不会到达这里
+            db = persistence::init_db().ok();
+        }
+        return Ok(());
     }
 
     // ── CLI 模式 ──
