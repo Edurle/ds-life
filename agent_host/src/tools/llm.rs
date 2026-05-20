@@ -118,6 +118,35 @@ const TOOLS_DEFINITION: &str = r#"[
         }
     },
     {
+        "name": "grep_files",
+        "description": "Search for a regex pattern in workspace files and return structured results with file, line, column, and context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search"},
+                "search_path": {"type": "string", "description": "Directory to search (default: .)"},
+                "include": {"type": "string", "description": "Glob patterns comma-separated, e.g. '*.rs,*.lua'"},
+                "context_lines": {"type": "integer", "description": "Context lines (default: 2)"},
+                "max_results": {"type": "integer", "description": "Max results (default: 50)"}
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
+        "name": "file_search",
+        "description": "Search for files by name fragment using fuzzy matching. Returns scored results.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "File name fragment"},
+                "search_path": {"type": "string", "description": "Directory (default: .)"},
+                "extensions": {"type": "string", "description": "File extensions comma-separated, e.g. 'rs,lua'"},
+                "max_results": {"type": "integer", "description": "Max results (default: 20)"}
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "apply_patch",
         "description": "Apply precise line-level edits to a file. Each operation is one of: replace (start_line/end_line → new_text), delete (start_line/end_line), insert_after (line → new_text), insert_before (line → new_text). Operations are applied in order.",
         "input_schema": {

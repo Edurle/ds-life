@@ -76,6 +76,12 @@ local function run_agent(task, max_steps, initial_messages)
                             return handler(tool_input.session_id)
                         elseif tool_name == "compile_with_feedback" then
                             return handler(tool_input.crate_dir or ".", tool_input.check_only or true)
+                        elseif tool_name == "grep_files" then
+                            return handler(tool_input.pattern, tool_input.search_path or ".",
+                                tool_input.include or "", tool_input.context_lines or 2, tool_input.max_results or 50)
+                        elseif tool_name == "file_search" then
+                            return handler(tool_input.query, tool_input.search_path or ".",
+                                tool_input.extensions or "", tool_input.max_results or 20)
                         elseif tool_name == "apply_patch" then
                             return handler(tool_input.path, json.encode(tool_input.operations))
                         else

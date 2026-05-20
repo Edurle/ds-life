@@ -159,6 +159,19 @@ fn create_lua() -> anyhow::Result<Lua> {
     })?;
     host.set("compile_with_feedback", host_compile)?;
 
+    // --- 搜索工具 ---
+    let host_grep = lua.create_function(|_, (pat, s_path, inc, ctx, max): (String, String, String, usize, usize)| {
+        tools::search::grep_files(&pat, &s_path, &inc, ctx, max)
+            .map_err(|e| mlua::Error::external(e))
+    })?;
+    host.set("grep_files", host_grep)?;
+
+    let host_fsearch = lua.create_function(|_, (q, s_path, exts, max): (String, String, String, usize)| {
+        tools::search::file_search(&q, &s_path, &exts, max)
+            .map_err(|e| mlua::Error::external(e))
+    })?;
+    host.set("file_search", host_fsearch)?;
+
     // --- 同步工具：apply_patch ---
     let host_apply_patch = lua.create_function(|_, (path, ops_json): (String, String)| {
         tools::fs::apply_patch(&path, &ops_json)
